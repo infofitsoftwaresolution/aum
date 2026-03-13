@@ -103,14 +103,19 @@ LOG_LEVEL=INFO
 
 ### PostgreSQL Query
 
-Update `aum_report_pipeline/queries/aum_query.sql` to match your schema.  
+`aum_report_pipeline/queries/aum_query.sql` is parameterised by an `anchor_month` date.  
+For each reporting window, the pipeline calls the query with a different `anchor_month` so that:
+
+- `latest_month_end` = last business day of the anchor month
+- `prior_month_end` = last business day of the month before the anchor month
+
 The query **must** return at least these columns:
 
 - `manager_firm`
 - `aum_prior_month`
 - `aum_latest_month`
 
-The provided template uses a simple aggregation and should be adapted as needed.
+The supplied query uses the `sleeve_allocations`, `aum_daily_values`, and `product_master` tables, and should be adapted to your schema as needed.
 
 ### Report Generation Logic
 

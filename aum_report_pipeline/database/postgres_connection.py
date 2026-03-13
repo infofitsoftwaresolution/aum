@@ -1,6 +1,6 @@
 import logging
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Iterator, Mapping, Any
 
 import pandas as pd
 import psycopg2
@@ -41,7 +41,11 @@ def get_connection(secrets: SecretsConfig) -> Iterator[psycopg2.extensions.conne
             conn.close()
 
 
-def run_query_to_dataframe(sql_path: str, secrets: SecretsConfig) -> pd.DataFrame:
+def run_query_to_dataframe(
+    sql_path: str,
+    secrets: SecretsConfig,
+    params: Mapping[str, Any] | None = None,
+) -> pd.DataFrame:
     """
     Execute the AUM SQL query and return the result as a pandas DataFrame.
 
@@ -50,17 +54,24 @@ def run_query_to_dataframe(sql_path: str, secrets: SecretsConfig) -> pd.DataFram
 
     :param sql_path: Path to the SQL file containing the query.
     :param secrets: SecretsConfig with DB credentials.
+    :param params: Optional mapping of SQL parameters (e.g. {'anchor_month': date}).
     :return: pandas DataFrame with query results.
     """
-    logger.info("Loading SQL query from file", extra={"sql_path": sql_path})
+    logger.info(
+        "Loading SQL query from file",
+        extra={"sql_path": sql_path},
+    )
     with open(sql_path, "r", encoding="utf-8") as f:
         query = f.read()
 
     with get_connection(secrets) as conn:
         try:
-            logger.info("Executing AUM query")
+            logger.info(
+                "Executing AUM query",
+                extra={"has_params": bool(params)},
+            )
             with conn.cursor(cursor_factory=DictCursor) as cur:
-                cur.execute(query)
+                cur.execute(query, params or None)
                 rows = cur.fetchall()
                 if not rows:
                     logger.warning("AUM query returned no rows")
@@ -78,4 +89,5 @@ def run_query_to_dataframe(sql_path: str, secrets: SecretsConfig) -> pd.DataFram
 
 
 __all__ = ["run_query_to_dataframe"]
+
 

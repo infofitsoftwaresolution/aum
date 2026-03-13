@@ -87,26 +87,49 @@ def main() -> None:
         logger.info("Step 1: Retrieving secrets from AWS Secrets Manager")
         secrets = get_secrets(secret_name)
 
-        # 2. Connect to PostgreSQL & run query
-        logger.info("Step 2: Executing AUM query against PostgreSQL")
-        df = run_query_to_dataframe(str(sql_path), secrets)
-        if df.empty:
-            logger.warning("No AUM data returned from PostgreSQL; exiting gracefully")
-            return
-
-        # 3. Generate reports per manager
-        logger.info("Step 3: Generating Excel reports per manager")
+        # 2. Compute reporting windows (e.g. latest month and previous month)
+        logger.info("Step 2: Computing reporting windows")
         date_windows = compute_default_date_windows()
-        generated_files = generate_manager_reports(df, output_root, date_windows)
-        if not generated_files:
-            logger.warning("No reports were generated; exiting gracefully")
+
+        # 3. For each window, run the parameterised query and generate reports
+        logger.info("Step 3: Executing AUM queries and generating Excel reports")
+        all_generated_files: list[tuple[str, Path]] = []
+
+        for window in date_windows:
+            logger.info(
+                "Running AUM query for reporting window",
+                extra={
+                    "label": window.label,
+                    "prior_month_end": window.prior_month_end.isoformat(),
+                    "latest_month_end": window.latest_month_end.isoformat(),
+                },
+            )
+
+            # Use latest_month_end as the anchor month for the SQL logic.
+            df_window = run_query_to_dataframe(
+                str(sql_path),
+                secrets,
+                params={"anchor_month": window.latest_month_end},
+            )
+            if df_window.empty:
+                logger.warning(
+                    "AUM query returned no rows for window; skipping report generation",
+                    extra={"label": window.label},
+                )
+                continue
+
+            generated_for_window = generate_manager_reports(df_window, output_root, [window])
+            all_generated_files.extend(generated_for_window)
+
+        if not all_generated_files:
+            logger.warning("No reports were generated for any window; exiting gracefully")
             return
 
         # 4. Upload to S3
         logger.info("Step 4: Uploading generated reports to S3")
         aws_region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
         upload_reports_to_s3(
-            generated_files,
+            all_generated_files,
             secrets,
             s3_prefix_root="managers/",
             region=aws_region,

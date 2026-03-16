@@ -1,0 +1,24 @@
+# Dependencies for AWS Lambda deployment
+# =====================================================================
+# This file is used ONLY when building the Lambda deployment package.
+# The root requirements.txt is used for LOCAL development.
+#
+# Key differences from requirements.txt:
+#   - boto3 / botocore are EXCLUDED (Lambda runtime already provides them)
+#   - azure-core is EXCLUDED (not needed for this pipeline)
+#   - psycopg2-binary is EXCLUDED (must use Lambda-compatible build via Layer)
+#
+# HOW TO USE:
+#   See deploy/build_lambda.ps1 for the full packaging script.
+# =====================================================================
+
+pandas==2.2.2
+openpyxl==3.1.5
+XlsxWriter==3.2.0
+python-dotenv==1.0.1
+SQLAlchemy==2.0.36
+
+# psycopg2 is provided via a Lambda Layer (Amazon Linux 2 compatible build).
+# Do NOT add psycopg2-binary here — the PyPI wheel is compiled for Debian/Ubuntu
+# and will silently fail to import on Lambda (Amazon Linux 2 uses different glibc).
+# Use the Layer ARN specified in deploy/build_lambda.ps1 instead.

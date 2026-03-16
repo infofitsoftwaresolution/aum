@@ -23,7 +23,7 @@ You will need this when creating IAM policies. A common mistake is copying it wi
 - [ ] AWS account access (admin or IAM + Lambda + S3 permissions)
 - [ ] AWS CLI installed → `aws --version`
 - [ ] Python 3.11 installed → `python --version`
-- [ ] S3 bucket created for demo output (e.g. `aum-demo-reports-shubham`)
+- [ ] S3 bucket created for demo output (e.g. `aum-demo-reports-example`)
 
 ---
 
@@ -40,7 +40,7 @@ You will need this when creating IAM policies. A common mistake is copying it wi
 
 **Go to**: AWS Console → S3 → **Create bucket**
 
-- Bucket name: `aum-demo-reports-shubham` (or any name you choose — must be globally unique)
+- Bucket name: `aum-demo-reports-example` (or any name you choose — must be globally unique)
 - Region: `ap-south-1`
 - Block all public access: ✅ Keep enabled (default)
 - Click **Create bucket**
@@ -77,7 +77,7 @@ Paste this policy (it's already saved in `deploy/iam_policy.json`):
         "s3:PutObject",
         "s3:PutObjectAcl"
       ],
-      "Resource": "arn:aws:s3:::aum-demo-reports-shubham/managers/*"
+      "Resource": "arn:aws:s3:::aum-demo-reports-example/managers/*"
     },
     {
       "Sid": "AllowCloudWatchLogs",
@@ -134,7 +134,7 @@ Paste this policy (it's already saved in `deploy/iam_policy.json`):
 | Key | Value | Notes |
 |---|---|---|
 | `DEMO_MODE` | `true` | Activates demo path — no DB needed |
-| `S3_BUCKET_NAME` | `aum-demo-reports-shubham` | Your bucket name |
+| `S3_BUCKET_NAME` | `aum-demo-reports-example` | Your bucket name |
 | `LOG_LEVEL` | `INFO` | Or `DEBUG` for verbose output |
 
 Click **Save**.

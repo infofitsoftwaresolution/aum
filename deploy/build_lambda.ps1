@@ -1,9 +1,11 @@
 # =============================================================================
 # build_lambda.ps1 — Build and deploy the AUM Report Pipeline Lambda package
 # =============================================================================
+#
+# EDIT THESE TWO VARIABLES if needed:
+$FUNCTION_NAME   = "aum-report-pipeline"    # Must match your Lambda function name
+$AWS_REGION      = "us-east-1"              # Must match your team lead's IAM policy region
 
-$FUNCTION_NAME   = "aum-report-pipeline"    # Your Lambda function name in AWS
-$AWS_REGION      = "ap-south-1"             # Must match your .env AWS_REGION
 $BUILD_DIR       = ".\build"
 $PACKAGE_DIR     = "$BUILD_DIR\package"
 $ZIP_PATH        = "$BUILD_DIR\aum_lambda.zip"
@@ -20,20 +22,19 @@ Start-Sleep -Seconds 1
 
 New-Item -ItemType Directory -Force -Path $PACKAGE_DIR | Out-Null
 
-# Redirect environment variables to local D: drive to avoid C: drive fullness
+# Redirect TMP/TEMP to D: drive to avoid "C: drive full" errors
 $TEMP_BUILD_DIR = "$BUILD_DIR\tmp"
-$PIP_CACHE_DIR = "$BUILD_DIR\pip_cache"
+$PIP_CACHE_DIR  = "$BUILD_DIR\pip_cache"
 New-Item -ItemType Directory -Force -Path $TEMP_BUILD_DIR | Out-Null
 New-Item -ItemType Directory -Force -Path $PIP_CACHE_DIR | Out-Null
 
-$env:TMP = (Resolve-Path $TEMP_BUILD_DIR).Path
+$env:TMP  = (Resolve-Path $TEMP_BUILD_DIR).Path
 $env:TEMP = (Resolve-Path $TEMP_BUILD_DIR).Path
 
 # =============================================================================
-# STEP 2 — Install dependencies for Amazon Linux 2 (manylinux2014)
+# STEP 2 — Install dependencies for Amazon Linux 2 (manylinux2014_x86_64)
 # =============================================================================
 Write-Host "==> Step 2: Installing Lambda-compatible dependencies..." -ForegroundColor Cyan
-# --no-cache-dir helps prevent some lock issues on Windows
 pip install `
     -r requirements_lambda.txt `
     --target $PACKAGE_DIR `
@@ -44,7 +45,7 @@ pip install `
     --upgrade
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: pip install failed. If you see 'PermissionError', try closing all folders/terminals and run again." -ForegroundColor Red
+    Write-Host "ERROR: pip install failed. If you see 'PermissionError', close all Explorer windows and try again." -ForegroundColor Red
     exit 1
 }
 
@@ -54,8 +55,9 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "==> Step 3: Copying source code..." -ForegroundColor Cyan
 Copy-Item -Recurse -Force ".\aum_report_pipeline" "$PACKAGE_DIR\aum_report_pipeline"
 
-# Clean up build artifacts from the zip
-Get-ChildItem -Recurse -Path $PACKAGE_DIR -Include "__pycache__", "*.pyc", "*.pyo" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# Remove __pycache__ and .pyc files to keep ZIP clean
+Get-ChildItem -Recurse -Path $PACKAGE_DIR -Include "__pycache__" -Directory | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Recurse -Path $PACKAGE_DIR -Include "*.pyc", "*.pyo"          | Remove-Item -Force        -ErrorAction SilentlyContinue
 
 # =============================================================================
 # STEP 4 — Create ZIP
@@ -63,7 +65,6 @@ Get-ChildItem -Recurse -Path $PACKAGE_DIR -Include "__pycache__", "*.pyc", "*.py
 Write-Host "==> Step 4: Creating deployment ZIP..." -ForegroundColor Cyan
 if (Test-Path $ZIP_PATH) { Remove-Item -Force $ZIP_PATH }
 
-# Use 7-Zip if available for better speed, otherwise standard Compress-Archive
 if (Get-Command 7z -ErrorAction SilentlyContinue) {
     & 7z a -tzip $ZIP_PATH "$PACKAGE_DIR\*" | Out-Null
 } else {
@@ -73,18 +74,21 @@ if (Get-Command 7z -ErrorAction SilentlyContinue) {
 $zipSizeMB = [math]::Round((Get-Item $ZIP_PATH).Length / 1MB, 2)
 Write-Host "    ZIP created: $ZIP_PATH ($zipSizeMB MB)" -ForegroundColor Green
 
+if ($zipSizeMB -gt 200) {
+    Write-Host "WARNING: ZIP is large (>200 MB). Consider moving more deps to a Lambda Layer." -ForegroundColor Yellow
+}
+
 # =============================================================================
-# STEP 5 — Deploy
+# STEP 5 — Deploy to Lambda
 # =============================================================================
 Write-Host "==> Step 5: Checking AWS credentials and deploying..." -ForegroundColor Cyan
 
-# Check if logged in
 $identity = aws sts get-caller-identity --query "Account" --output text 2>$null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: AWS CLI is not logged in or token expired." -ForegroundColor Red
-    Write-Host "Please run 'aws sso login' or 'aws configure' first." -ForegroundColor Yellow
+    Write-Host "ERROR: AWS CLI is not authenticated. Run 'aws configure' first." -ForegroundColor Red
     exit 1
 }
+Write-Host "    Authenticated as AWS Account: $identity" -ForegroundColor Green
 
 aws lambda update-function-code `
     --function-name $FUNCTION_NAME `
@@ -93,11 +97,14 @@ aws lambda update-function-code `
     --output table
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: Lambda deployment failed." -ForegroundColor Red
+    Write-Host "ERROR: Lambda deployment failed. Check function name and region." -ForegroundColor Red
     exit 1
 }
 
-Write-Host "`n==> DEPLOYMENT COMPLETE!" -ForegroundColor Green
+Write-Host ""
+Write-Host "==> DEPLOYMENT COMPLETE!" -ForegroundColor Green
 Write-Host "    Function : $FUNCTION_NAME"
 Write-Host "    Region   : $AWS_REGION"
 Write-Host "    Handler  : aum_report_pipeline.lambda_handler.handler"
+Write-Host ""
+Write-Host "Next: Go to Lambda Console -> Test tab -> run with {}" -ForegroundColor Yellow

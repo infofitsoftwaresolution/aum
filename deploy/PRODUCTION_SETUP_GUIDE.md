@@ -1,103 +1,141 @@
 # AWS Console Setup Guide — PRODUCTION TRACK (Real Database)
 
-This guide takes the AUM Report Pipeline out of "Demo Mode" and connects it to the real PostgreSQL database using the `callanOSbilling2` secret provided by your team lead.
+This guide connects your Lambda function to the real PostgreSQL database
+using the `aum-report-secrets` secret set up by your team lead.
 
 ---
 
-## Prerequisites Checklist
+## ✅ Key Values (confirmed from your team lead's IAM policy)
 
-- [x] Lambda function `aum-report-pipeline` deployed with `.zip` package.
-- [x] S3 bucket ready for uploads (e.g., `aris-data-extracts`).
-- [x] AWS Secret `callanOSbilling2` exists in AWS Secrets Manager.
+| Setting | Value |
+|---|---|
+| **Secret Name** | `aum-report-secrets` |
+| **AWS Region** | `us-east-1` |
+| **S3 Bucket** | `aris-data-extracts` |
+| **Account ID** | `650089954417` |
 
----
-
-## Step 1 — Update the Lambda IAM Role (Permissions)
-
-Your Lambda needs permission to read the real database credentials from AWS Secrets Manager.
-
-**Go to**: AWS Console → IAM → Roles → find exactly `aum-report-pipeline-role`.
-
-1. Click **Add permissions** → **Create inline policy**.
-2. Switch to the **JSON** tab and paste this exactly:
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-       "Effect": "Allow",
-       "Action": "secretsmanager:GetSecretValue",
-       "Resource": "arn:aws:secretsmanager:us-east-1:*:secret:callanOSbilling2-*"
-    }
-  ]
-}
-```
-*(Note: If the secret is in `ap-south-1`, change the region in the `Resource` string).*
-3. Click **Next**, name the policy `Production-Secrets-Access`, and click **Create Policy**.
+> ⚠️ **Your Lambda function MUST also be created in `us-east-1`!**
+> If it's in `ap-south-1`, it won't be able to access the secret or the S3 bucket.
 
 ---
 
-## Step 2 — Attach the PostgreSQL Lambda Layer
+## Step 1 — Create Lambda in `us-east-1`
 
-`psycopg2` requires compiled C code to connect to PostgreSQL. AWS Lambda (Amazon Linux) rejects the Windows version bundled by `pip`. **You MUST attach a Lambda Layer.**
+**Go to**: AWS Console → Make sure region is **US East (N. Virginia) = `us-east-1`** (top-right corner).
 
-**Go to**: AWS Console → Lambda → `aum-report-pipeline`.
-
-1. Scroll down to the **Layers** section (at the very bottom).
-2. Click **Add a layer**.
-3. Choose **Specify an ARN**.
-4. Paste the ARN of a `psycopg2` layer for Python 3.11 in your AWS region.
-   *(Ask your Team Lead for their psycopg2 Layer ARN, or you can find public ones online like `arn:aws:lambda:us-east-1:816281081515:layer:psycopg2-py311:1`)*
-5. Click **Verify**, then **Add**.
+Lambda → **Create function**:
+- Function name: `aum-report-pipeline`
+- Runtime: **Python 3.11**
+- Architecture: `x86_64`
+- Execution role → **Use an existing role** → Select `aum-report-pipeline-role` (your team lead's role).
+- Click **Create function**.
 
 ---
 
-## Step 3 — VPC Configuration (Important!)
+## Step 2 — Configure Runtime Settings
 
-If the real database is sitting inside a private network, Lambda needs to be moved inside that network to talk to it.
-
-**Configuration tab** → **VPC** → **Edit**:
-- **VPC**: Select the VPC that hosts your `callanOSbilling2` database.
-- **Subnets**: Select at least 2 private subnets.
-- **Security Groups**: Select a security group that allows outbound connections on port `5432` (PostgreSQL).
-- Click **Save**. *(Skip this step if your database is publicly accessible over the internet via an IP/DNS).*
+**Configuration tab** → **Runtime settings** → **Edit**:
+- Handler: `aum_report_pipeline.lambda_handler.handler`
+- Click **Save**.
 
 ---
 
-## Step 4 — Flip the Environment Switches
+## Step 3 — Configure General Settings
 
-Turn off Demo Mode and tell the code which Secret to read.
+**Configuration tab** → **General configuration** → **Edit**:
+- Memory: `512 MB`
+- Ephemeral storage: `1024 MB`
+- Timeout: `10 min 0 sec`
+- Click **Save**.
 
-**Configuration tab** → **Environment variables** → **Edit**:
+---
 
-| Key | Value | Notes |
-|---|---|---|
-| `DEMO_MODE` | `false` | This turns OFF the synthetic demo data. |
-| `AWS_SECRETS_NAME` | `callanOSbilling2` | The exact name of your Team Lead's secret. |
-| `S3_BUCKET_NAME` | `aris-data-extracts` | Or whatever your real S3 bucket is. |
-| `LOG_LEVEL` | `INFO` | Or `DEBUG` for verbose output. |
+## Step 4 — Set Environment Variables
+
+**Configuration tab** → **Environment variables** → **Edit** → **Add environment variable**:
+
+| Key | Value |
+|---|---|
+| `DEMO_MODE` | `false` |
+| `AWS_SECRETS_NAME` | `aum-report-secrets` |
+| `S3_BUCKET_NAME` | `aris-data-extracts` |
+| `LOG_LEVEL` | `INFO` |
 
 Click **Save**.
 
+> ❌ Do NOT add `AWS_REGION` — this is a reserved key; Lambda sets it automatically.
+> ❌ Do NOT add `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — Lambda uses the IAM role.
+
 ---
 
-## Step 5 — Deploy and Test
+## Step 5 — Attach the psycopg2 Lambda Layer
 
-**1. Generate the Zip**
-Open **PowerShell** in your project directory and run:
+To connect to PostgreSQL, Lambda needs a compiled driver.
+
+1. Scroll to **Layers** section on the Lambda page.
+2. Click **Add a layer** → **Specify an ARN**.
+3. Ask your team lead for the `psycopg2` Layer ARN (or use a public one for `us-east-1`):
+   ```
+   arn:aws:lambda:us-east-1:898466741470:layer:psycopg2-py311:2
+   ```
+4. Click **Verify** → **Add**.
+
+---
+
+## Step 6 — VPC Configuration (if DB is in a private network)
+
+**Configuration tab** → **VPC** → **Edit**:
+- VPC: Select the same VPC as the database.
+- Subnets: At least 2 private subnets.
+- Security Groups: Allow outbound TCP on port `5432`.
+- Click **Save**.
+
+*(Skip this if your DB is publicly accessible).*
+
+---
+
+## Step 7 — Deploy the Code
+
+**Build the ZIP**:
 ```powershell
+cd d:\shivaproject
 .\deploy\build_lambda.ps1
 ```
-*(This zips up the new `aws_secrets.py` fix we just added which adapts to the `callanOSbilling2` schema).*
 
-**2. Test the Lambda**
-Go to Lambda → `aum-report-pipeline` → **Test** tab:
-- Event name: `production-test`
+**Upload to Lambda**:
+- Lambda Console → `aum-report-pipeline` → **Code** tab.
+- Click **Upload from** → **.zip file**.
+- Select `build\aum_lambda.zip` → Click **Save**.
+
+---
+
+## Step 8 — Test
+
+Lambda → `aum-report-pipeline` → **Test** tab:
+- Event name: `prod-test`
 - Event JSON: `{}`
 - Click **Test**
 
-**Expected output logs**:
-- `Retrieving secrets for 'callanOSbilling2'`
-- `Executing AUM queries via postgres...`
-- `Reports generated for X schemas`
-- `Upload complete to s3://aris-data-extracts/managers/...`
+**Expected logs in CloudWatch**:
+```
+Retrieving secrets for 'aum-report-secrets'
+Successfully retrieved secrets for 'aum-report-secrets'
+Step 2: Computing reporting windows
+Step 3: Executing AUM queries and generating Excel reports
+AUM report pipeline completed successfully
+```
+
+**Check S3**: `aris-data-extracts` bucket → confirm `.xlsx` files appear under `managers/`.
+
+---
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|---|---|---|
+| `UnrecognizedClientException` | Lambda is in the wrong AWS region | Delete function and recreate in `us-east-1` |
+| `ResourceNotFoundException` on secret | `AWS_SECRETS_NAME` value is wrong | Must be exactly `aum-report-secrets` |
+| `AccessDenied` on secretsmanager | Wrong role attached to Lambda | Go to Configuration → Permissions and confirm the role containing the team lead's policy is shown |
+| `psycopg2 not found` | psycopg2 Layer not attached | Repeat Step 5 |
+| `Connection refused on port 5432` | Lambda not in same VPC as DB | Complete Step 6 |
+| `S3 PutObject AccessDenied` | Wrong Lambda region OR wrong bucket name | Confirm Lambda is in `us-east-1` and `S3_BUCKET_NAME=aris-data-extracts` |

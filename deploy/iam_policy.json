@@ -2,24 +2,48 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "AllowS3ReportsWrite",
-      "Effect": "Allow",
-      "Action": [
-        "s3:PutObject",
-        "s3:PutObjectAcl"
-      ],
-      "Resource": "arn:aws:s3:::aum-demo-reports-shubham/managers/*"
-    },
-    {
-      "Sid": "AllowCloudWatchLogs",
+      "Sid": "ManageLogsForAnyLambdaFunction",
       "Effect": "Allow",
       "Action": [
         "logs:CreateLogGroup",
         "logs:CreateLogStream",
         "logs:PutLogEvents"
       ],
-      "Resource": "arn:aws:logs:*:*:*"
+      "Resource": "arn:aws:logs:us-east-1:650089954417:log-group:/aws/lambda/*"
+    },
+    {
+      "Sid": "ReadSpecificSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:us-east-1:650089954417:secret:aum-report-secrets-npaIqm"
+      ]
+    },
+    {
+      "Sid": "DecryptSecretsKmsKey",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt"
+      ],
+      "Resource": [
+        "arn:aws:kms:us-east-1:650089954417:key/17b8098f-6311-4bdd-8414-18593c404e14"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "secretsmanager.us-east-1.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "ListAllowedS3Prefix",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::aris-data-extracts/*"
     }
   ]
 }
-

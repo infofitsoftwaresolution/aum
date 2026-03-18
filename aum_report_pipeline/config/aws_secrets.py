@@ -16,6 +16,7 @@ class SecretsConfig:
     """Container for all credentials and configuration retrieved from AWS Secrets Manager."""
 
     postgres_host: str
+    postgres_port: str
     postgres_db: str
     postgres_user: str
     postgres_password: str
@@ -25,7 +26,7 @@ class SecretsConfig:
 def get_secrets(secret_name: str) -> SecretsConfig:
     """
     Retrieve application secrets from AWS Secrets Manager.
-    Supports both the 'aum-report-secrets' schema and the 'callanOSbilling2' schema.
+    Supports AWS RDS auto-generated secrets, falling back to defaults where necessary.
 
     :param secret_name: Name of the secret in AWS Secrets Manager.
     :return: SecretsConfig instance with all required values.
@@ -42,22 +43,13 @@ def get_secrets(secret_name: str) -> SecretsConfig:
     try:
         response = client.get_secret_value(SecretId=secret_name)
     except ClientError as exc:
-        # Surface the EXACT AWS error code in the logs so it shows in CloudWatch
         error_code = exc.response["Error"]["Code"]
         error_msg = exc.response["Error"]["Message"]
-        logger.error(
-            f"AWS ClientError fetching secret '{secret_name}': "
-            f"[{error_code}] {error_msg}"
-        )
-        raise RuntimeError(
-            f"Failed to retrieve secret '{secret_name}' from Secrets Manager. "
-            f"AWS Error: [{error_code}] {error_msg}"
-        ) from exc
+        logger.error(f"AWS ClientError fetching secret '{secret_name}': [{error_code}] {error_msg}")
+        raise RuntimeError(f"Failed to retrieve secret '{secret_name}' from Secrets Manager. AWS Error: [{error_code}] {error_msg}") from exc
     except BotoCoreError as exc:
         logger.exception(f"BotoCoreError fetching secret '{secret_name}': {exc}")
-        raise RuntimeError(
-            f"Failed to retrieve secret '{secret_name}' from Secrets Manager: {exc}"
-        ) from exc
+        raise RuntimeError(f"Failed to retrieve secret '{secret_name}' from Secrets Manager: {exc}") from exc
 
     secret_string = response.get("SecretString")
     if not secret_string:
@@ -69,40 +61,36 @@ def get_secrets(secret_name: str) -> SecretsConfig:
         logger.exception("Failed to parse secret JSON")
         raise RuntimeError("Failed to parse secret JSON") from exc
 
-    # Parse dynamically — supports both 'aum-report-secrets' and 'callanOSbilling2' schemas
-    host = data.get("postgres_host") or data.get("host") or data.get("dbHost")
-    db = data.get("postgres_db") or data.get("database") or data.get("dbName")
+    # Parse dynamically with fallbacks for standard AWS RDS secrets
+    host = data.get("postgreshost") or data.get("host") or data.get("dbHost")
+    port = str(data.get("port") or "5432")
+    db = data.get("postgres_db") or data.get("database") or data.get("dbName") or "postgres"
     user = data.get("postgres_user") or data.get("username") or data.get("dbUsername")
     password = data.get("postgres_password") or data.get("password") or data.get("dbPassword")
 
     missing = []
     if not host:     missing.append("host")
-    if not db:       missing.append("database")
     if not user:     missing.append("username")
     if not password: missing.append("password")
 
     if missing:
         logger.error(f"Missing required DB keys in secret '{secret_name}': {missing}")
-        raise RuntimeError(
-            f"Missing required DB keys in secret '{secret_name}': {', '.join(missing)}"
-        )
+        raise RuntimeError(f"Missing required DB keys in secret '{secret_name}': {', '.join(missing)}")
 
     # S3 bucket: prefer env var, fall back to value inside the secret
     s3_bucket = os.getenv("S3_BUCKET_NAME") or data.get("s3_bucket_name")
     if not s3_bucket:
-        raise RuntimeError(
-            "S3_BUCKET_NAME is not set. Add it as a Lambda environment variable."
-        )
+        raise RuntimeError("S3_BUCKET_NAME is not set. Add it as a Lambda environment variable.")
 
-    logger.info(f"Successfully retrieved secret '{secret_name}'. Host={host}, DB={db}")
+    logger.info(f"Successfully retrieved secret '{secret_name}'. Host={host}, Port={port}, DB={db}")
 
     return SecretsConfig(
         postgres_host=host,
+        postgres_port=port,
         postgres_db=db,
         postgres_user=user,
         postgres_password=password,
         s3_bucket_name=s3_bucket,
     )
-
 
 __all__ = ["SecretsConfig", "get_secrets"]

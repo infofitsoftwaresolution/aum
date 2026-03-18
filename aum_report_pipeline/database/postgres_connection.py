@@ -27,10 +27,15 @@ def get_connection(secrets: SecretsConfig) -> Iterator[Any]:
     try:
         logger.info(
             "Opening PostgreSQL connection",
-            extra={"host": secrets.postgres_host, "db": secrets.postgres_db},
+            extra={
+                "host": secrets.postgres_host,
+                "port": secrets.postgres_port,
+                "db": secrets.postgres_db
+            },
         )
         conn = psycopg2.connect(
             host=secrets.postgres_host,
+            port=secrets.postgres_port,
             dbname=secrets.postgres_db,
             user=secrets.postgres_user,
             password=secrets.postgres_password,
@@ -93,5 +98,3 @@ def run_query_to_dataframe(
 
 
 __all__ = ["run_query_to_dataframe"]
-
-

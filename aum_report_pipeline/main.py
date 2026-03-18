@@ -102,15 +102,12 @@ def _run_demo_pipeline(output_root: Path, logger: logging.Logger) -> None:
         )
 
     # Build a minimal SecretsConfig for demo — only s3_bucket_name is used.
-    # aws_access_key / aws_secret_key are None → s3_uploader uses the IAM role.
     # DB fields are empty strings — they are never used in demo mode.
     demo_secrets = SecretsConfig(
         postgres_host="",
         postgres_db="",
         postgres_user="",
         postgres_password="",
-        aws_access_key=None,
-        aws_secret_key=None,
         s3_bucket_name=s3_bucket,
     )
 
@@ -138,20 +135,24 @@ def _run_demo_pipeline(output_root: Path, logger: logging.Logger) -> None:
             logger.warning("Demo sample data returned empty DataFrame — skipping window")
             continue
 
-        generated_for_window = generate_manager_reports(df_window, output_root, [window])
-        all_generated_files.extend(generated_for_window)
+        generated = generate_manager_reports(
+            df=df_window,
+            output_dir=output_root / window.label,
+            report_month=window.latest_month_end,
+        )
+        all_generated_files.extend(generated)
 
     if not all_generated_files:
-        logger.warning("Demo: No reports generated; exiting gracefully")
+        logger.warning("No demo reports generated")
         return
 
-    # Step D3: Upload to S3 (identical to production)
+    # Step D3: Upload to S3
     logger.info("Demo Step 3: Uploading demo reports to S3")
     aws_region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+    
     upload_reports_to_s3(
-        all_generated_files,
-        demo_secrets,
-        s3_prefix_root="managers/",
+        generated_files=all_generated_files,
+        secrets=demo_secrets,
         region=aws_region,
     )
 
@@ -248,55 +249,55 @@ def run_pipeline() -> None:
 
             # Use latest_month_end as the anchor month for the SQL logic.
             df_window = run_query_to_dataframe(
-                str(sql_path),
-                secrets,
-                params={"anchor_month": window.latest_month_end},
+                connection_config=secrets,
+                sql_file_path=sql_path,
+                report_month_end=window.latest_month_end,
             )
+
             if df_window.empty:
                 logger.warning(
-                    "AUM query returned no rows for window; skipping report generation",
-                    extra={"label": window.label},
+                    f"No data returned for window {window.label} — skipping"
                 )
                 continue
 
-            generated_for_window = generate_manager_reports(df_window, output_root, [window])
-            all_generated_files.extend(generated_for_window)
+            generated = generate_manager_reports(
+                df=df_window,
+                output_dir=output_root / window.label,
+                report_month=window.latest_month_end,
+            )
+            all_generated_files.extend(generated)
 
         if not all_generated_files:
-            logger.warning("No reports were generated for any window; exiting gracefully")
+            logger.warning("No reports generated for any window")
             return
 
         # 4. Upload to S3
         logger.info("Step 4: Uploading generated reports to S3")
         aws_region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
         upload_reports_to_s3(
-            all_generated_files,
-            secrets,
-            s3_prefix_root="managers/",
+            generated_files=all_generated_files,
+            secrets=secrets,
             region=aws_region,
         )
 
-        # 5. Cleanup local files
-        logger.info("Step 5: Cleaning up local generated files")
+        # 5. Cleanup
+        logger.info("Step 5: Cleaning up local output directory")
         cleanup_output_directory(output_root)
 
         logger.info("AUM report pipeline completed successfully")
 
     except Exception as exc:  # noqa: BLE001
         logger.exception("AUM report pipeline failed")
-        # Re-raise as RuntimeError (not SystemExit) so AWS Lambda records the
-        # failure correctly in CloudWatch and triggers the Dead Letter Queue (DLQ)
-        # if one is configured. Local main() will still see the raised exception.
         raise RuntimeError(f"AUM report pipeline failed: {exc}") from exc
 
 
 def main() -> None:
-    """
-    Local entry point — loads .env file before running the pipeline.
-
-    For AWS Lambda execution use aum_report_pipeline.lambda_handler.handler instead.
-    """
+    """Local execution entrypoint."""
     load_dotenv()
+    # Explicit check for local dev to guide user away from reserved Lambda var
+    if not os.getenv("AWS_DEFAULT_REGION") and not os.getenv("AWS_REGION"):
+        # We fallback to defaulting for local if nothing set, though pipeline requires it
+        os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
     run_pipeline()
 
 

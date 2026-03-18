@@ -105,6 +105,7 @@ def _run_demo_pipeline(output_root: Path, logger: logging.Logger) -> None:
     # DB fields are empty strings — they are never used in demo mode.
     demo_secrets = SecretsConfig(
         postgres_host="",
+        postgres_port="5432",
         postgres_db="",
         postgres_user="",
         postgres_password="",
@@ -247,11 +248,11 @@ def run_pipeline() -> None:
                 },
             )
 
-            # Use latest_month_end as the anchor month for the SQL logic.
+            # Pass parameters expected by the aum_query.sql explicitly mapping parameters.
             df_window = run_query_to_dataframe(
-                connection_config=secrets,
-                sql_file_path=sql_path,
-                report_month_end=window.latest_month_end,
+                sql_path=str(sql_path),
+                secrets=secrets,
+                params={"anchor_month": window.latest_month_end},
             )
 
             if df_window.empty:

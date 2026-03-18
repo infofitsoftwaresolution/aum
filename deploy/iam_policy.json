@@ -8,7 +8,7 @@
         "s3:PutObject",
         "s3:PutObjectAcl"
       ],
-      "Resource": "arn:aws:s3:::aum-demo-reports-example/managers/*"
+      "Resource": "arn:aws:s3:::aum-demo-reports-shubham/managers/*"
     },
     {
       "Sid": "AllowCloudWatchLogs",
@@ -22,3 +22,4 @@
     }
   ]
 }
+

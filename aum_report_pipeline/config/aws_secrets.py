@@ -63,14 +63,10 @@ def _get_boto3_session_from_env() -> boto3.Session:
 def get_secrets(secret_name: str) -> SecretsConfig:
     """
     Retrieve application secrets from AWS Secrets Manager.
-
-    The secret is expected to be a JSON object with at least:
-        postgres_host, postgres_db, postgres_user, postgres_password,
-        aws_access_key, aws_secret_key, s3_bucket_name
+    Supports either the aum-report-secrets schema OR the callanOSbilling2 schema!
 
     :param secret_name: Name of the secret in AWS Secrets Manager.
     :return: SecretsConfig instance with all required values.
-    :raises RuntimeError: If secrets cannot be retrieved or parsed.
     """
     session = _get_boto3_session_from_env()
     client = session.client("secretsmanager")
@@ -95,36 +91,39 @@ def get_secrets(secret_name: str) -> SecretsConfig:
         logger.exception("Failed to parse secret JSON")
         raise RuntimeError("Failed to parse secret JSON") from exc
 
-    # These keys MUST be present and non-empty.
-    required_keys = [
-        "postgres_host",
-        "postgres_db",
-        "postgres_user",
-        "postgres_password",
-        "s3_bucket_name",
-    ]
-    # aws_access_key and aws_secret_key are OPTIONAL:
-    #   - On AWS Lambda: the Lambda execution IAM role provides credentials;
-    #     store these as null in Secrets Manager.
-    #   - For local dev / EC2 with explicit keys: store the actual key values.
-    # optional_keys = ["aws_access_key", "aws_secret_key"]
-    missing = [k for k in required_keys if k not in data or data[k] in (None, "")]
+    # Parse dynamically supporting both conventions
+    host = data.get("postgres_host") or data.get("host") or data.get("dbHost")
+    db = data.get("postgres_db") or data.get("database") or data.get("dbName")
+    user = data.get("postgres_user") or data.get("username") or data.get("dbUsername")
+    password = data.get("postgres_password") or data.get("password") or data.get("dbPassword")
+    
+    # Check what is missing
+    missing = []
+    if not host: missing.append("host")
+    if not db: missing.append("database")
+    if not user: missing.append("username")
+    if not password: missing.append("password")
+
     if missing:
         logger.error("Missing required keys in secret", extra={"missing_keys": missing})
-        raise RuntimeError(f"Missing required keys in secret: {', '.join(missing)}")
+        raise RuntimeError(f"Missing required DB keys in secret '{secret_name}': {', '.join(missing)}")
 
-    logger.info("Successfully retrieved secrets from AWS Secrets Manager")
+    # The original team secret 'callanOSbilling2' does NOT contain 's3_bucket_name'.
+    # We must retrieve it from the environment variable set on Lambda.
+    s3_bucket = os.getenv("S3_BUCKET_NAME") or data.get("s3_bucket_name")
+    if not s3_bucket:
+         raise RuntimeError("S3_BUCKET_NAME is not set in environment or secret!")
+
+    logger.info(f"Successfully retrieved secrets for '{secret_name}'")
 
     return SecretsConfig(
-        postgres_host=data["postgres_host"],
-        postgres_db=data["postgres_db"],
-        postgres_user=data["postgres_user"],
-        postgres_password=data["postgres_password"],
+        postgres_host=host,
+        postgres_db=db,
+        postgres_user=user,
+        postgres_password=password,
         aws_access_key=data.get("aws_access_key"),
         aws_secret_key=data.get("aws_secret_key"),
-        s3_bucket_name=data["s3_bucket_name"],
+        s3_bucket_name=s3_bucket,
     )
 
-
 __all__ = ["SecretsConfig", "get_secrets"]
-

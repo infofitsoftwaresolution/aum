@@ -14,7 +14,8 @@ if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 New-Item -ItemType Directory -Path $buildDir | Out-Null
 
 $includeFiles = @(
-    "lambda_function.py"
+    "lambda_function.py",
+    "schema.sql"
 )
 
 foreach ($fileName in $includeFiles) {

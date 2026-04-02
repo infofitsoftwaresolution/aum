@@ -10,24 +10,20 @@ It reads DB credentials from AWS Secrets Manager secret **`callanOSbilling2`**, 
 - Processes every `.dat` file delivered by the S3 trigger (prefix configured in S3/SAM)
 - Parse fixed-width `D` rows and store normalized fields + `raw_line`
 - Insert idempotently with uniqueness on `(s3_bucket, s3_key, line_number)`
+- On each cold start / invocation, applies **`schema.sql`** from the deployment package (creates table, indexes, constraint if missing)
 
 ## Files
 
-- `lambda_function.py` - Handler, parser, secrets lookup, DB insert logic
-- `schema.sql` - Raw ingestion table + indexes + unique constraint
+- `lambda_function.py` - Handler, parser, secrets lookup, DDL apply, DB insert logic
+- `schema.sql` - Bundled in the function zip; applied automatically at runtime (idempotent)
 - `template.yaml` - AWS SAM template for S3 trigger and IAM
 - `requirements.txt` - Python layer dependencies
-- `build-function.ps1` - Creates `s3-dat-ingestion-function.zip` (code only)
+- `build-function.ps1` - Creates `s3-dat-ingestion-function.zip` (`lambda_function.py` + `schema.sql`)
 - `build-layer.ps1` - Creates `s3-dat-ingestion-deps-layer.zip` (dependencies)
 
-## 1) Create database objects
+## 1) Database permissions
 
-Run:
-
-```sql
--- execute file contents
-schema.sql
-```
+The Postgres user from Secrets Manager needs **`CREATE`** on the target schema (usually `public`) so the Lambda can run `schema.sql`. You can still run `schema.sql` manually to verify.
 
 ## 2) Build deployment artifacts
 
@@ -68,6 +64,8 @@ Provide:
 
 1. Upload one test `.dat` file to the configured bucket/prefix.
 2. Check CloudWatch logs for:
+   - `DB_SCHEMA_APPLY_OK` (DDL from bundled `schema.sql`)
+   - `DB_SCHEMA_OK` (column list)
    - `Processing s3://...`
    - `attempted rows` and `inserted rows`
 3. Validate rows in PostgreSQL:

@@ -6,7 +6,11 @@ This document describes the PostgreSQL schema used by the S3-triggered DAT inges
 
 ## 1. Database schema
 
-Run the following in the same PostgreSQL database as the AUM pipeline (credentials come from AWS Secrets Manager secret `callanOSbilling2` by default).
+The Lambda deployment zip includes **`schema.sql`** next to `lambda_function.py`. On **each invocation**, the function **applies this DDL** (idempotent: `CREATE TABLE IF NOT EXISTS`, indexes, unique constraint). **If `public.s3_file_records` does not exist yet, it is created on that run.** If it already exists, the same statements no-op safely. You can still run the SQL manually in Postgres if you want to verify or pre-create objects.
+
+**Database user:** The secret’s PostgreSQL user must be allowed to **`CREATE TABLE`** and **`CREATE INDEX`** in `public` (or adjust grants / schema).
+
+The DDL is the same as below (also in [schema.sql](schema.sql) in the repo):
 
 ```sql
 CREATE TABLE IF NOT EXISTS s3_file_records (
@@ -45,6 +49,25 @@ CREATE INDEX IF NOT EXISTS idx_s3_file_records_s3_key
 
 - **Idempotency:** Inserts use `ON CONFLICT (s3_bucket, s3_key, line_number) DO NOTHING` so retries or re-uploads do not duplicate rows.
 
+### What the new table contains (`public.s3_file_records`)
+
+| Column | Type | Meaning |
+|--------|------|--------|
+| `id` | `BIGSERIAL` | Surrogate primary key |
+| `ingested_at` | `TIMESTAMPTZ` | When the row was inserted (default `NOW()`) |
+| `s3_bucket` | `TEXT` | S3 bucket name for the source file |
+| `s3_key` | `TEXT` | Full object key (path) in that bucket |
+| `line_number` | `INT` | Line number in the `.dat` file (1-based) |
+| `record_type` | `VARCHAR(1)` | First character of the line (e.g. `D` for data rows) |
+| `source_type` | `VARCHAR(32)` | Parsed layout: `TASOPEN`, `TASCLOS`, `IFN_DIRECTORY`, or `UNKNOWN` |
+| `account_code` | `TEXT` | Fixed-width field when applicable |
+| `cusip` | `TEXT` | CUSIP when present |
+| `ticker` | `TEXT` | Ticker when present |
+| `security_description` | `TEXT` | Description field when present |
+| `raw_line` | `TEXT` | Full source line (traceability) |
+
+**Also created (if missing):** unique constraint on `(s3_bucket, s3_key, line_number)` and two indexes on `(source_type, cusip, ticker)` and `(s3_bucket, s3_key)`.
+
 ---
 
 ## 2. Build deployment zips (local)
@@ -60,7 +83,7 @@ From:
 
 | Output | Purpose |
 |--------|---------|
-| `s3-dat-ingestion-function.zip` | Lambda function code only |
+| `s3-dat-ingestion-function.zip` | Lambda code + bundled `schema.sql` (DDL applied at runtime) |
 | `s3-dat-ingestion-deps-layer.zip` | Dependencies (`psycopg2-binary`, etc.) |
 
 **Requirements:**
@@ -114,7 +137,12 @@ In **S3 → Bucket → Properties → Event notifications** (or via SAM `templat
 ## 6. Test flow
 
 1. Upload a `.dat` file under `s3://callan-sftp/Fidelity/`.  
-2. Open **CloudWatch Logs** for the function. You should see lines such as:
+2. Open **CloudWatch Logs** for the function. On each run, the function **applies schema from the zip** then logs:
+   - `DB_SCHEMA_FILE` — path to bundled `schema.sql` in the runtime
+   - `DB_SCHEMA_APPLY_START` / `DB_SCHEMA_APPLY_STATEMENT` / `DB_SCHEMA_APPLY_OK` — DDL executed
+   - `DB_CONNECT_OK` — after commit
+   - `DB_SCHEMA_OK` — column list read from `information_schema` (verify in DB with `\d s3_file_records` or the SQL below)
+   Then, per file:
    - `Processing s3://callan-sftp/Fidelity/...`  
    - `attempted rows` and `inserted rows`  
 3. Query PostgreSQL:

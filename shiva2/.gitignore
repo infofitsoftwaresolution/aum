@@ -6,3 +6,6 @@
 **/function_build/
 **/layer_build/
 *.zip
+
+__pycache__/
+*.pyc

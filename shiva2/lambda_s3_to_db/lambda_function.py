@@ -2,6 +2,7 @@ import json
 import logging
 import urllib.parse
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
 import boto3
@@ -13,6 +14,9 @@ logger.setLevel(logging.INFO)
 
 s3_client = boto3.client("s3")
 secrets_client = boto3.client("secretsmanager")
+
+# Ingestion table name; DDL is applied from bundled schema.sql on each run (idempotent).
+INGESTION_TABLE = "s3_file_records"
 
 
 @dataclass
@@ -134,6 +138,117 @@ def _db_connection():
     )
 
 
+def _strip_sql_line_comments(sql: str) -> str:
+    lines = []
+    for line in sql.splitlines():
+        stripped = line.split("--", 1)[0].rstrip()
+        if stripped.strip():
+            lines.append(stripped)
+    return "\n".join(lines)
+
+
+def _split_schema_statements(sql: str) -> List[str]:
+    """Split schema.sql into executable statements (handles DO $$ ... END $$; blocks)."""
+    sql = _strip_sql_line_comments(sql).strip()
+    statements: List[str] = []
+    i = 0
+    n = len(sql)
+    while i < n:
+        while i < n and sql[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        rest = sql[i:].lstrip()
+        upper = rest[:20].upper()
+        if upper.startswith("DO $$"):
+            end = sql.find("END $$;", i)
+            if end == -1:
+                raise ValueError("schema.sql: unclosed DO $$ block (expected END $$;)")
+            chunk = sql[i : end + len("END $$;")].strip()
+            statements.append(chunk)
+            i = end + len("END $$;")
+            continue
+        j = sql.find(";", i)
+        if j == -1:
+            tail = sql[i:].strip()
+            if tail:
+                statements.append(tail if tail.endswith(";") else tail + ";")
+            break
+        chunk = sql[i:j].strip()
+        if chunk:
+            statements.append(chunk + ";")
+        i = j + 1
+    return statements
+
+
+def _load_schema_sql_text() -> str:
+    """Load DDL from schema.sql next to this module (bundled in function zip)."""
+    path = Path(__file__).resolve().parent / "schema.sql"
+    if not path.is_file():
+        raise RuntimeError(
+            f"schema.sql not found at {path}. Include schema.sql in the Lambda deployment package."
+        )
+    return path.read_text(encoding="utf-8")
+
+
+def _ensure_schema_and_log() -> None:
+    """
+    Connect, apply DDL from bundled schema.sql (idempotent), log result.
+    CloudWatch: DB_SCHEMA_APPLY_*, DB_CONNECT_OK, DB_SCHEMA_OK.
+    Requires DB user with CREATE TABLE / CREATE INDEX on the target schema (typically public).
+    """
+    cfg = _get_db_config()
+    logger.info(
+        "DB_CONNECT_START | host=%s port=%s dbname=%s user=%s | will ensure table=public.%s",
+        cfg.host,
+        cfg.port,
+        cfg.dbname,
+        cfg.user,
+        INGESTION_TABLE,
+    )
+    schema_path = Path(__file__).resolve().parent / "schema.sql"
+    logger.info("DB_SCHEMA_FILE | path=%s bundled=%s", schema_path, schema_path.is_file())
+
+    ddl_text = _load_schema_sql_text()
+    statements = _split_schema_statements(ddl_text)
+    logger.info("DB_SCHEMA_APPLY_START | statement_count=%s", len(statements))
+    conn = _db_connection()
+    try:
+        with conn.cursor() as cur:
+            for idx, stmt in enumerate(statements, start=1):
+                preview = stmt.replace("\n", " ")[:120]
+                logger.info("DB_SCHEMA_APPLY_STATEMENT | n=%s | preview=%s", idx, preview)
+                cur.execute(stmt)
+            logger.info("DB_SCHEMA_APPLY_OK | applied_statements=%s", len(statements))
+            logger.info(
+                "DB_SCHEMA_TABLE_READY | public.%s ensured (CREATE IF NOT EXISTS + indexes + constraint)",
+                INGESTION_TABLE,
+            )
+            cur.execute(
+                """
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = %s
+                ORDER BY ordinal_position
+                """,
+                (INGESTION_TABLE,),
+            )
+            columns = cur.fetchall()
+        conn.commit()
+        logger.info("DB_CONNECT_OK | connected to %s", cfg.dbname)
+        logger.info(
+            "DB_SCHEMA_OK | table=public.%s | column_count=%s | columns=%s",
+            INGESTION_TABLE,
+            len(columns),
+            [c[0] for c in columns],
+        )
+    except Exception:
+        logger.exception("DB_SCHEMA_APPLY_FAILED")
+        raise
+    finally:
+        conn.close()
+
+
 def _insert_records(bucket: str, key: str, records: Iterable[ParsedLine]) -> Tuple[int, int]:
     rows = [
         (
@@ -189,6 +304,8 @@ def _should_process_key(key: str) -> bool:
 
 def lambda_handler(event, context):
     logger.info("Received event: %s", json.dumps(event))
+    _ensure_schema_and_log()
+
     total_inserted = 0
     files_processed = 0
 

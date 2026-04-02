@@ -1,0 +1,8 @@
+# Large sample custodian files (do not commit)
+*.DAT
+*.dat
+
+# Local build outputs
+**/function_build/
+**/layer_build/
+*.zip

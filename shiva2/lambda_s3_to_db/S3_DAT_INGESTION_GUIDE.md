@@ -6,50 +6,21 @@ This document describes the PostgreSQL schema used by the S3-triggered DAT inges
 
 ## 1. Database schema
 
-The Lambda deployment zip includes **`schema.sql`** next to `lambda_function.py`. On **each invocation**, the function **applies this DDL** (idempotent: `CREATE TABLE IF NOT EXISTS`, indexes, unique constraint). **If `public.s3_file_records` does not exist yet, it is created on that run.** If it already exists, the same statements no-op safely. You can still run the SQL manually in Postgres if you want to verify or pre-create objects.
+The Lambda deployment zip includes **`schema.sql`** next to `lambda_function.py`. On **each invocation**, the function **applies this DDL** (idempotent):
 
-**Database user:** The secret’s PostgreSQL user must be allowed to **`CREATE TABLE`** and **`CREATE INDEX`** in `public` (or adjust grants / schema).
+1. **`CREATE SCHEMA IF NOT EXISTS custodian`** — keeps custodian data separate from billing / other schemas  
+2. **`CREATE TABLE IF NOT EXISTS custodian.s3_file_records`** — raw ingestion table  
+3. Unique constraint + indexes on **`custodian.s3_file_records`**
 
-The DDL is the same as below (also in [schema.sql](schema.sql) in the repo):
+**If the schema or table does not exist yet, it is created on that run.** If they already exist, the same statements no-op safely.
 
-```sql
-CREATE TABLE IF NOT EXISTS s3_file_records (
-    id BIGSERIAL PRIMARY KEY,
-    ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    s3_bucket TEXT NOT NULL,
-    s3_key TEXT NOT NULL,
-    line_number INT NOT NULL,
-    record_type VARCHAR(1) NOT NULL,
-    source_type VARCHAR(32) NOT NULL,
-    account_code TEXT NULL,
-    cusip TEXT NULL,
-    ticker TEXT NULL,
-    security_description TEXT NULL,
-    raw_line TEXT NOT NULL
-);
+**Database user:** The secret’s PostgreSQL user must be allowed to **`CREATE SCHEMA`**, **`CREATE TABLE`**, and **`CREATE INDEX`** (on database or at least on schema `custodian`).
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_constraint
-        WHERE conname = 'uq_s3_file_records_row'
-    ) THEN
-        ALTER TABLE s3_file_records
-            ADD CONSTRAINT uq_s3_file_records_row UNIQUE (s3_bucket, s3_key, line_number);
-    END IF;
-END $$;
-
-CREATE INDEX IF NOT EXISTS idx_s3_file_records_source
-    ON s3_file_records (source_type, cusip, ticker);
-
-CREATE INDEX IF NOT EXISTS idx_s3_file_records_s3_key
-    ON s3_file_records (s3_bucket, s3_key);
-```
+Authoritative DDL: [schema.sql](schema.sql) in this folder (also bundled inside the function zip).
 
 - **Idempotency:** Inserts use `ON CONFLICT (s3_bucket, s3_key, line_number) DO NOTHING` so retries or re-uploads do not duplicate rows.
 
-### What the new table contains (`public.s3_file_records`)
+### What the new table contains (`custodian.s3_file_records`)
 
 | Column | Type | Meaning |
 |--------|------|--------|
@@ -66,7 +37,9 @@ CREATE INDEX IF NOT EXISTS idx_s3_file_records_s3_key
 | `security_description` | `TEXT` | Description field when present |
 | `raw_line` | `TEXT` | Full source line (traceability) |
 
-**Also created (if missing):** unique constraint on `(s3_bucket, s3_key, line_number)` and two indexes on `(source_type, cusip, ticker)` and `(s3_bucket, s3_key)`.
+**Also created (if missing):** PostgreSQL schema **`custodian`**, unique constraint on `(s3_bucket, s3_key, line_number)`, and two indexes on `(source_type, cusip, ticker)` and `(s3_bucket, s3_key)`.
+
+**Verify in SQL:** `SELECT * FROM custodian.s3_file_records LIMIT 5;` or `\dn custodian` / `\dt custodian.*` in `psql`.
 
 ---
 
@@ -141,7 +114,7 @@ In **S3 → Bucket → Properties → Event notifications** (or via SAM `templat
    - `DB_SCHEMA_FILE` — path to bundled `schema.sql` in the runtime
    - `DB_SCHEMA_APPLY_START` / `DB_SCHEMA_APPLY_STATEMENT` / `DB_SCHEMA_APPLY_OK` — DDL executed
    - `DB_CONNECT_OK` — after commit
-   - `DB_SCHEMA_OK` — column list read from `information_schema` (verify in DB with `\d s3_file_records` or the SQL below)
+   - `DB_SCHEMA_OK` — column list read from `information_schema` (verify in DB with `\d custodian.s3_file_records` or the SQL below)
    Then, per file:
    - `Processing s3://callan-sftp/Fidelity/...`  
    - `attempted rows` and `inserted rows`  
@@ -149,7 +122,7 @@ In **S3 → Bucket → Properties → Event notifications** (or via SAM `templat
 
 ```sql
 SELECT s3_bucket, s3_key, COUNT(*) AS row_count
-FROM s3_file_records
+FROM custodian.s3_file_records
 GROUP BY s3_bucket, s3_key
 ORDER BY MAX(ingested_at) DESC;
 ```

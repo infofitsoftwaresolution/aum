@@ -23,7 +23,7 @@ It reads DB credentials from AWS Secrets Manager secret **`callanOSbilling2`**, 
 
 ## 1) Database permissions
 
-The Postgres user from Secrets Manager needs **`CREATE`** on the target schema (usually `public`) so the Lambda can run `schema.sql`. You can still run `schema.sql` manually to verify.
+The Postgres user from Secrets Manager needs **`CREATE SCHEMA`** / **`CREATE TABLE`** / **`CREATE INDEX`** so the Lambda can apply `schema.sql` (creates schema **`custodian`** and table **`custodian.s3_file_records`**).
 
 ## 2) Build deployment artifacts
 
@@ -72,7 +72,7 @@ Provide:
 
 ```sql
 SELECT s3_bucket, s3_key, COUNT(*) AS row_count
-FROM s3_file_records
+FROM custodian.s3_file_records
 GROUP BY s3_bucket, s3_key
 ORDER BY MAX(ingested_at) DESC;
 ```

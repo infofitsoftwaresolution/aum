@@ -15,7 +15,8 @@ logger.setLevel(logging.INFO)
 s3_client = boto3.client("s3")
 secrets_client = boto3.client("secretsmanager")
 
-# Ingestion table name; DDL is applied from bundled schema.sql on each run (idempotent).
+# Ingestion objects in dedicated PostgreSQL schema (see schema.sql).
+INGESTION_SCHEMA = "custodian"
 INGESTION_TABLE = "s3_file_records"
 
 
@@ -195,15 +196,21 @@ def _ensure_schema_and_log() -> None:
     """
     Connect, apply DDL from bundled schema.sql (idempotent), log result.
     CloudWatch: DB_SCHEMA_APPLY_*, DB_CONNECT_OK, DB_SCHEMA_OK.
-    Requires DB user with CREATE TABLE / CREATE INDEX on the target schema (typically public).
+    Requires DB user with CREATE SCHEMA / CREATE TABLE / CREATE INDEX (creates schema `custodian`).
     """
+    logger.info(
+        "HANDLER_STEP | schema_ensure_enter | target=%s.%s",
+        INGESTION_SCHEMA,
+        INGESTION_TABLE,
+    )
     cfg = _get_db_config()
     logger.info(
-        "DB_CONNECT_START | host=%s port=%s dbname=%s user=%s | will ensure table=public.%s",
+        "DB_CONNECT_START | host=%s port=%s dbname=%s user=%s | will ensure table=%s.%s",
         cfg.host,
         cfg.port,
         cfg.dbname,
         cfg.user,
+        INGESTION_SCHEMA,
         INGESTION_TABLE,
     )
     schema_path = Path(__file__).resolve().parent / "schema.sql"
@@ -237,7 +244,8 @@ def _ensure_schema_and_log() -> None:
         conn.commit()
         logger.info("DB_CONNECT_OK | connected to %s", cfg.dbname)
         logger.info(
-            "DB_SCHEMA_OK | table=public.%s | column_count=%s | columns=%s",
+            "DB_SCHEMA_OK | table=%s.%s | column_count=%s | columns=%s",
+            INGESTION_SCHEMA,
             INGESTION_TABLE,
             len(columns),
             [c[0] for c in columns],
@@ -273,8 +281,8 @@ def _insert_records(bucket: str, key: str, records: Iterable[ParsedLine]) -> Tup
     try:
         with conn.cursor() as cur:
             cur.executemany(
-                """
-                INSERT INTO s3_file_records (
+                f"""
+                INSERT INTO {INGESTION_SCHEMA}.{INGESTION_TABLE} (
                     s3_bucket,
                     s3_key,
                     line_number,
@@ -287,7 +295,7 @@ def _insert_records(bucket: str, key: str, records: Iterable[ParsedLine]) -> Tup
                     raw_line
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (s3_bucket, s3_key, line_number) DO NOTHING
-                """,
+                """,  # noqa: S608 — schema/table names are fixed constants, not user input
                 rows,
             )
             inserted = cur.rowcount if cur.rowcount != -1 else 0
@@ -303,13 +311,20 @@ def _should_process_key(key: str) -> bool:
 
 
 def lambda_handler(event, context):
-    logger.info("Received event: %s", json.dumps(event))
+    logger.info("HANDLER_STEP | 1_enter | s3_dat_ingestion")
+    logger.info("HANDLER_STEP | 2_event_json=%s", json.dumps(event, default=str))
+    records = event.get("Records") or []
+    if not records:
+        logger.warning(
+            "HANDLER_WARN | event has no Records[] — this is not an S3 notification. "
+            "Schema DDL still runs below; use an S3 test event or upload a .dat file to trigger ingestion."
+        )
     _ensure_schema_and_log()
 
     total_inserted = 0
     files_processed = 0
 
-    for event_record in event.get("Records", []):
+    for event_record in records:
         if event_record.get("eventSource") != "aws:s3":
             continue
 

@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import stat
 
 import boto3
 import paramiko
@@ -14,6 +15,7 @@ secrets_client = boto3.client("secretsmanager")
 s3_client = boto3.client("s3")
 
 SECRET_NAME = "schwab_sftp"
+TARGET_BUCKET = "callan-sftp"
 
 
 def _read_secret() -> dict:
@@ -32,20 +34,6 @@ def _read_secret() -> dict:
     if missing:
         raise RuntimeError(f"Secret '{SECRET_NAME}' missing keys: {', '.join(missing)}")
     return data
-
-
-def _select_s3_bucket(secret: dict) -> str:
-    bucket = (
-        os.getenv("TARGET_S3_BUCKET")
-        or secret.get("target_s3_bucket")
-        or secret.get("s3_bucket_name")
-    )
-    if not bucket:
-        raise RuntimeError(
-            "No destination S3 bucket configured. Set TARGET_S3_BUCKET env var "
-            "or include target_s3_bucket in secret schwab_sftp."
-        )
-    return bucket
 
 
 def _select_remote_path(secret: dict) -> str:
@@ -68,6 +56,20 @@ def _list_zip_files(sftp: paramiko.SFTPClient, remote_path: str) -> list[str]:
     return sorted(files)
 
 
+def _log_remote_listing(sftp: paramiko.SFTPClient, remote_path: str) -> None:
+    entries = sftp.listdir_attr(remote_path)
+    logger.info("SFTP_REMOTE_LIST_START | path=%s entry_count=%s", remote_path, len(entries))
+    for entry in entries:
+        entry_type = "DIR" if stat.S_ISDIR(entry.st_mode) else "FILE"
+        logger.info(
+            "SFTP_REMOTE_ENTRY | type=%s name=%s size_bytes=%s",
+            entry_type,
+            entry.filename,
+            entry.st_size,
+        )
+    logger.info("SFTP_REMOTE_LIST_DONE | path=%s", remote_path)
+
+
 def lambda_handler(event, context):
     logger.info("HANDLER_START | event=%s", json.dumps(event, default=str))
     secret = _read_secret()
@@ -77,7 +79,7 @@ def lambda_handler(event, context):
     password = secret["password"]
 
     remote_path = _select_remote_path(secret)
-    bucket = _select_s3_bucket(secret)
+    bucket = TARGET_BUCKET
     s3_prefix = _select_s3_prefix()
 
     logger.info(
@@ -99,6 +101,7 @@ def lambda_handler(event, context):
         transport.connect(username=username, password=password)
         sftp = paramiko.SFTPClient.from_transport(transport)
         logger.info("SFTP_CONNECT_OK")
+        _log_remote_listing(sftp, remote_path)
 
         zip_files = _list_zip_files(sftp, remote_path)
         logger.info("SFTP_LIST_OK | zip_file_count=%s", len(zip_files))

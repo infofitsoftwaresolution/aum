@@ -19,12 +19,9 @@ Minimum keys required:
 Optional keys:
 
 - `remote_path` (default `"."`)
-- `target_s3_bucket` (used if env `TARGET_S3_BUCKET` is not set)
-- `s3_bucket_name` (fallback alias for bucket key)
 
 ## Environment variables (optional)
 
-- `TARGET_S3_BUCKET` - destination S3 bucket (recommended)
 - `SFTP_REMOTE_PATH` - override remote folder path
 - `S3_PREFIX` - S3 key prefix, default `Schwab/`
 
@@ -61,4 +58,4 @@ On each invocation:
 2. Connects to SFTP
 3. Lists files in the remote path
 4. Downloads `.zip` files to `/tmp`
-5. Uploads them to `s3://<bucket>/<S3_PREFIX><filename>`
+5. Uploads them to hardcoded bucket `s3://callan-sftp/<S3_PREFIX><filename>`
